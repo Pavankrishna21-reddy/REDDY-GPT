@@ -95,3 +95,7 @@ if user_input:
         save_to_history(user_input, results[0]['title'])
     else:
         st.warning("No search results found.")
+        
+        pyinstaller --onefile --noconsole ReddyGPT_13.py
+
+
