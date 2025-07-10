@@ -1,4 +1,7 @@
-lxml_html_clean
-
-
-
+streamlit
+duckduckgo-search
+newspaper3k
+beautifulsoup4
+requests
+speechrecognition
+langdetect
