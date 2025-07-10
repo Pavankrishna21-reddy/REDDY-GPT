@@ -1,10 +1,4 @@
-streamlit
-pyttsx3
-speechrecognition
-duckduckgo-search
-newspaper3k
-beautifulsoup4
-requests
-lxml
-langdetect
+lxml_html_clean
+
+
 
