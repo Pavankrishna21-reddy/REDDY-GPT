@@ -1,6 +1,6 @@
 import streamlit as st
 import speech_recognition as sr
-import pyttsx3
+import pyttsx3 import platform  enable_voice = platform.system() != "Linux"  # Disable on Streamlit Cloud (usually Linux) if enable_voice:     engine = pyttsx3.init()     engine.setProperty('rate', 170)
 import threading
 from duckduckgo_search import DDGS
 from newspaper import Article
