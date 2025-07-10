@@ -1,5 +1,6 @@
 import streamlit as st
 import speech_recognition as sr
+import pyttsx3
 import threading
 from duckduckgo_search import DDGS
 from newspaper import Article
@@ -8,20 +9,14 @@ from bs4 import BeautifulSoup
 import os
 import uuid
 import datetime
-import platform
-import pyttsx3
+from langdetect import detect
 
-# Detect if running locally or on Streamlit Cloud
-enable_voice = platform.system() != "Linux"
-if enable_voice:
-    engine = pyttsx3.init()
-    engine.setProperty('rate', 170)
+# Initialize TTS engine
+engine = pyttsx3.init()
+engine.setProperty('rate', 170)
 
 # Function to speak asynchronously
-
 def speak_async(text):
-    if not enable_voice:
-        return
     def speak():
         engine.say(text)
         engine.runAndWait()
@@ -37,10 +32,10 @@ if not os.path.exists(CHAT_HISTORY_FILE):
 def get_voice_input():
     recognizer = sr.Recognizer()
     with sr.Microphone() as source:
-        st.info("🎤 Listening...")
+        st.info("Listening...")
         audio = recognizer.listen(source)
         try:
-            query = recognizer.recognize_google(audio)
+            query = recognizer.recognize_google(audio, language="en-IN")
             return query
         except sr.UnknownValueError:
             st.warning("Sorry, I could not understand the audio.")
@@ -48,20 +43,21 @@ def get_voice_input():
             st.error("Could not request results from Google Speech Recognition service.")
     return ""
 
-# Language detection (English, Hindi, Telugu)
+# Function to detect language (basic filter for Telugu, Hindi, English)
 def is_supported_language(text):
-    from langdetect import detect
     try:
         lang = detect(text)
-        return lang in ["en", "hi", "te"]
+        if lang in ["en", "hi", "te"]:
+            return True
     except:
-        return False
+        pass
+    return False
 
-# Search using DuckDuckGo
+# Function to fetch top 5 search results from DuckDuckGo
 def search_duckduckgo(query):
     results = []
     with DDGS() as ddgs:
-        for r in ddgs.text(query, region="wt-wt", safesearch="moderate", timelimit="d", max_results=5):
+        for r in ddgs.text(query, region="in-en", safesearch="moderate", timelimit="d", max_results=5):
             results.append({
                 "title": r.get("title"),
                 "href": r.get("href"),
@@ -69,7 +65,7 @@ def search_duckduckgo(query):
             })
     return results
 
-# Summarize content from URL
+# Function to summarize content from a URL
 def summarize_url(url):
     try:
         article = Article(url)
@@ -87,14 +83,14 @@ def summarize_url(url):
         except:
             return "Summary unavailable."
 
-# Save chat to history
+# Function to add to history
 def save_to_history(user_input, response):
     with open(CHAT_HISTORY_FILE, "a", encoding="utf-8") as f:
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         f.write(f"[{timestamp}] User: {user_input}\n")
         f.write(f"[{timestamp}] ReddyGPT: {response}\n\n")
 
-# Sidebar for history
+# Sidebar for chat history
 with st.sidebar:
     st.markdown("### ☰ ReddyGPT Chat History")
     if os.path.exists(CHAT_HISTORY_FILE):
@@ -102,10 +98,10 @@ with st.sidebar:
             history = f.read()
         st.text_area("Chat Log", history, height=300)
         if st.button("Clear History"):
-            open(CHAT_HISTORY_FILE, "w", encoding="utf-8").close()
-            st.experimental_rerun()
+            open(CHAT_HISTORY_FILE, "w").close()
+            st.rerun()
 
-# Page setup
+# Page Setup
 st.set_page_config(page_title="ReddyGPT", page_icon="🤖")
 st.markdown("""
     <style>
@@ -122,16 +118,16 @@ st.markdown("""
 
 st.title("🤖 ReddyGPT: Live Web Search + AI Response")
 
-# Input area
+# User Input
 col1, col2 = st.columns([9, 1])
 with col1:
     user_input = st.text_input("Enter your query here:", "")
 with col2:
     if st.button("🎙️", help="Click to speak"):
         user_input = get_voice_input()
-        st.experimental_rerun()
+        st.rerun()
 
-# Handle search
+# Run search and show results
 if user_input:
     if is_supported_language(user_input):
         st.markdown(f"### 🔍 Results for: `{user_input}`")
