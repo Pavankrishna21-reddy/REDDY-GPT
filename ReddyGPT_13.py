@@ -13,7 +13,7 @@ logging.basicConfig(filename='reddygpt.log', level=logging.INFO)
 
 class ReddyGPT:
     def __init__(self):
-        self.api_key = os.getenv("OPENAI_API_KEY")
+        self.api_key = os.getenv("sk-...d4AA")
         openai.api_key = self.api_key
         self.search_client = AsyncDDGS(timeout=15)
         self.conversation_log = "conversations.log"
