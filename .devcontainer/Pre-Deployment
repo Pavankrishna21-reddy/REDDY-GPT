@@ -1,0 +1,12 @@
+# Clone your repository (if not already done)
+git clone https://github.com/yourusername/ReddyGPT.git
+cd ReddyGPT
+
+# Create virtual environment (recommended)
+python -m venv reddyenv
+source reddyenv/bin/activate  # Linux/Mac
+# OR
+reddyenv\Scripts\activate    # Windows
+
+# Install dependencies
+pip install -r requirements.txt
