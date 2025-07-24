@@ -1,0 +1,14 @@
+async def unified_search(self, query: str) -> List[Dict]:
+    engine_order = os.getenv('SEARCH_PRIORITY', 'google,serpapi,duckduckgo').split(',')
+    engine_map = {
+        'google': self.google_search,
+        'serpapi': self.serpapi_search,
+        'duckduckgo': self.duckduckgo_search
+    }
+    
+    for engine_name in engine_order:
+        if engine_name in engine_map:
+            results = await engine_map[engine_name](query)
+            if results:
+                return results
+    return []
