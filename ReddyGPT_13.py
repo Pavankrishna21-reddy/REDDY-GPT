@@ -23,9 +23,16 @@ logging.basicConfig(
 class SearchEngine:
     def __init__(self):
         self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
+        self.engines = {
+            'google': self._google_search,
+            'serpapi': self._serpapi_search,
+            'ddg': self._ddg_search
+        }
 
     async def _google_search(self, query: str) -> List[Dict]:
         """Google Custom Search API"""
+        if not (os.getenv('GOOGLE_API_KEY') and os.getenv('GOOGLE_CSE_ID')):
+            return []
         try:
             async with self.session.get(
                 "https://www.googleapis.com/customsearch/v1",
@@ -47,6 +54,31 @@ class SearchEngine:
             logging.warning(f"Google search failed: {str(e)}")
             return []
 
+    async def _serpapi_search(self, query: str) -> List[Dict]:
+        """SERPAPI Search"""
+        if not os.getenv('SERPAPI_KEY'):
+            return []
+        try:
+            async with self.session.get(
+                "https://serpapi.com/search.json",
+                params={
+                    'api_key': os.getenv('SERPAPI_KEY'),
+                    'q': query,
+                    'engine': 'google',
+                    'num': 3
+                }
+            ) as response:
+                data = await response.json()
+                return [{
+                    'title': result.get('title'),
+                    'url': result.get('link'),
+                    'content': result.get('snippet', ''),
+                    'engine': 'serpapi'
+                } for result in data.get('organic_results', [])]
+        except Exception as e:
+            logging.warning(f"SERPAPI search failed: {str(e)}")
+            return []
+
     async def _ddg_search(self, query: str) -> List[Dict]:
         """DuckDuckGo Search"""
         try:
@@ -62,22 +94,32 @@ class SearchEngine:
             return []
 
     async def search(self, query: str) -> List[Dict]:
-        """Run all available searches"""
-        results = []
+        """Run all available searches with failover"""
+        active_engines = [
+            engine for engine in self.engines 
+            if engine != 'serpapi' or os.getenv('SERPAPI_KEY')
+        ]
+        
         try:
-            # Run searches in parallel
-            google, ddg = await asyncio.gather(
-                self._google_search(query),
-                self._ddg_search(query)
-            )
-            results = google + ddg
+            # Run all searches in parallel
+            results = await asyncio.gather(*[
+                self.engines[engine](query)
+                for engine in active_engines
+            ])
             
-            # Deduplicate by URL
-            seen = set()
-            return [r for r in results if not (r['url'] in seen or seen.add(r['url']))]
+            # Flatten and deduplicate results
+            all_results = []
+            seen_urls = set()
+            for engine_results in results:
+                for item in engine_results:
+                    if item['url'] not in seen_urls:
+                        all_results.append(item)
+                        seen_urls.add(item['url'])
+            
+            return sorted(all_results, key=lambda x: x['engine'] != 'google')[:5]
         except Exception as e:
             logging.error(f"Search failed: {str(e)}")
-            return results
+            return []
 
 class ReddyGPT:
     def __init__(self):
@@ -97,16 +139,28 @@ class ReddyGPT:
             # Get search results
             results = await self.searcher.search(query)
             context = "\n".join(
-                f"• {r['title']}\n  {r['content']}\n  Source: {r['url']}"
-                for r in results[:3]
+                f"• [{r['engine'].upper()}] {r['title']}\n"
+                f"  {r['content']}\n"
+                f"  Source: {r['url']}"
+                for r in results
             ) if results else "No search results found"
 
             # Stream response
             response = await openai.ChatCompletion.acreate(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "You are ReddyGPT..."},
-                    {"role": "user", "content": f"Query: {query}\nContext:\n{context}"}
+                    {
+                        "role": "system",
+                        "content": """You are ReddyGPT. Follow these rules:
+1. Provide accurate, concise responses
+2. Cite sources when available
+3. Format lists clearly
+4. If unsure, say "I don't know\"""" 
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Query: {query}\nContext:\n{context}"
+                    }
                 ],
                 stream=True
             )
@@ -125,14 +179,19 @@ class ReddyGPT:
 
 # Streamlit App
 async def main():
-    st.set_page_config(page_title="ReddyGPT", page_icon="🤖")
+    st.set_page_config(
+        page_title="ReddyGPT Pro",
+        page_icon="🤖",
+        layout="wide"
+    )
     
     if 'bot' not in st.session_state:
         st.session_state.bot = ReddyGPT()
         st.session_state.messages = []
 
-    st.title("🐦‍🔥 ReddyGPT")
-    
+    st.title("🌐 ReddyGPT Pro")
+    st.caption("Multi-Search AI Assistant")
+
     # Display chat
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
@@ -151,6 +210,7 @@ async def main():
                 st.session_state.messages.append({"role": "assistant", "content": response})
             except Exception as e:
                 st.error(f"System error: {str(e)}")
+                logging.critical(f"Critical failure: {str(e)}")
 
 if __name__ == "__main__":
     asyncio.run(main())
