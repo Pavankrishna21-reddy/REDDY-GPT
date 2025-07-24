@@ -1,0 +1,27 @@
+name: Rotate OpenAI Key
+on:
+  schedule:
+    - cron: '0 0 1 * *'  # Runs monthly
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate new key
+        run: |
+          NEW_KEY=$(curl -s -X POST "https://api.openai.com/v1/api_keys" \
+            -H "Authorization: Bearer ${{ secrets.OPENAI_ADMIN_KEY }}" \
+            -d '{"name":"auto-$(date +%Y%m%d)"}' | jq -r '.key')
+          echo "NEW_KEY=$NEW_KEY" >> $GITHUB_ENV
+      
+      - name: Update GitHub secret
+        uses: actions/github-script@v6
+        with:
+          script: |
+            await github.rest.actions.createOrUpdateRepoSecret({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              secret_name: 'OPENAI_API_KEY',
+              encrypted_value: process.env.NEW_KEY
+            })
+            
