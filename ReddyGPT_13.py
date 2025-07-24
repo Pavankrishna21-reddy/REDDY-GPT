@@ -1,73 +1,153 @@
+import os
+import asyncio
+import logging
+from datetime import datetime
+from typing import List, Dict, Optional
+from dotenv import load_dotenv
+import aiohttp
+import openai
 import streamlit as st
 from duckduckgo_search import AsyncDDGS
-import openai
-import asyncio
-import os
-from dotenv import load_dotenv
-from datetime import datetime
-import logging
 
 # Configuration
 load_dotenv()
-logging.basicConfig(filename='reddygpt.log', level=logging.INFO)
+logging.basicConfig(
+    filename='reddygpt.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+class SearchEngine:
+    """Unified search interface for multiple engines"""
+    def __init__(self):
+        self.engines = {
+            'google': self._google_search,
+            'serpapi': self._serpapi_search,
+            'duckduckgo': self._duckduckgo_search
+        }
+        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
+
+    async def _google_search(self, query: str) -> List[Dict]:
+        """Google Custom Search JSON API"""
+        params = {
+            'key': os.getenv('GOOGLE_API_KEY'),
+            'cx': os.getenv('GOOGLE_CSE_ID'),
+            'q': query,
+            'num': 5
+        }
+        try:
+            async with self.session.get(
+                "https://www.googleapis.com/customsearch/v1",
+                params=params
+            ) as response:
+                data = await response.json()
+                return [{
+                    'title': item['title'],
+                    'url': item['link'],
+                    'snippet': item.get('snippet', ''),
+                    'engine': 'google'
+                } for item in data.get('items', [])]
+        except Exception as e:
+            logging.error(f"Google search error: {str(e)}")
+            return []
+
+    async def _serpapi_search(self, query: str) -> List[Dict]:
+        """SERP API Search"""
+        params = {
+            'api_key': os.getenv('SERPAPI_KEY'),
+            'q': query,
+            'engine': 'google',
+            'num': 5
+        }
+        try:
+            async with self.session.get(
+                "https://serpapi.com/search.json",
+                params=params
+            ) as response:
+                data = await response.json()
+                return [{
+                    'title': item.get('title'),
+                    'url': item.get('link'),
+                    'snippet': item.get('snippet', ''),
+                    'engine': 'serpapi'
+                } for item in data.get('organic_results', [])]
+        except Exception as e:
+            logging.error(f"SERPAPI error: {str(e)}")
+            return []
+
+    async def _duckduckgo_search(self, query: str) -> List[Dict]:
+        """DuckDuckGo Search"""
+        try:
+            async with AsyncDDGS() as ddgs:
+                return [{
+                    'title': r.get('title', ''),
+                    'url': r.get('href', '#'),
+                    'snippet': r.get('body', ''),
+                    'engine': 'duckduckgo'
+                } async for r in ddgs.text(query, max_results=5)]
+        except Exception as e:
+            logging.error(f"DuckDuckGo error: {str(e)}")
+            return []
+
+    async def search(self, query: str) -> List[Dict]:
+        """Execute parallel searches with fallback"""
+        tasks = [engine(query) for engine in self.engines.values()]
+        results = await asyncio.gather(*tasks)
+        
+        # Deduplicate results by URL
+        seen_urls = set()
+        deduped = []
+        for engine_results in results:
+            for item in engine_results:
+                if item['url'] not in seen_urls:
+                    deduped.append(item)
+                    seen_urls.add(item['url'])
+        return deduped[:10]  # Return top 10 unique results
 
 class ReddyGPT:
     def __init__(self):
-        self.api_key = os.getenv("sk-...d4AA")
-        openai.api_key = self.api_key
-        self.search_client = AsyncDDGS(timeout=15)
+        self.search_engine = SearchEngine()
+        openai.api_key = os.getenv('OPENAI_API_KEY')
         self.conversation_log = "conversations.log"
-        
-        # Initialize session state
-        if 'history' not in st.session_state:
-            st.session_state.history = []
 
-    async def _search_web(self, query):
-        """Enhanced asynchronous web search with error handling"""
+    async def generate_response(self, query: str) -> str:
+        """Generate response with search context"""
         try:
-            results = []
-            async for result in self.search_client.text(
-                query,
-                region="wt-wt",
-                max_results=5,
-                safesearch="Moderate"
-            ):
-                results.append({
-                    'title': result.get('title', 'No title'),
-                    'url': result.get('href', '#'),
-                    'content': result.get('body', 'No content')[:500]  # Truncate long content
-                })
-            return results
-        except Exception as e:
-            logging.error(f"Search Error: {str(e)}")
-            return []
+            # Get search results (all engines in parallel)
+            search_results = await self.search_engine.search(query)
+            
+            # Prepare context
+            context = "\n".join(
+                f"🔍 [{res['engine'].upper()}] {res['title']}\n"
+                f"   {res['snippet']}\n"
+                f"   Source: {res['url']}\n"
+                for res in search_results[:5]  # Top 5 results
+            ) if search_results else "No search results found"
 
-    async def _generate_response(self, query, context=""):
-        """Generate AI response with fallback logic"""
-        try:
+            # Generate AI response
             messages = [
                 {
                     "role": "system",
-                    "content": """You are ReddyGPT, an advanced AI assistant. Follow these rules:
-                    1. Provide accurate, concise responses
-                    2. For Hyderabad-related queries, include local insights
-                    3. Format lists with bullet points
-                    4. Admit when you don't know something"""
+                    "content": """You are ReddyGPT, an advanced AI assistant. Rules:
+1. Provide accurate, concise responses
+2. Cite sources when available
+3. For Hyderabad queries, include local insights
+4. Format lists clearly"""
                 },
                 {
-                    "role": "user",
-                    "content": f"Query: {query}\n\nContext:\n{context}"
+                    "role": "user", 
+                    "content": f"Query: {query}\n\nSearch Results:\n{context}"
                 }
             ]
-            
+
             response = await openai.ChatCompletion.acreate(
-                model="gpt-4-turbo-preview",  # Fastest model
+                model="gpt-4-turbo-preview",
                 messages=messages,
                 temperature=0.7,
-                stream=True  # Enable streaming
+                stream=True
             )
-            
-            # Stream the response
+
+            # Stream response
             full_response = ""
             placeholder = st.empty()
             async for chunk in response:
@@ -77,83 +157,63 @@ class ReddyGPT:
             placeholder.markdown(full_response)
             
             return full_response
-            
-        except Exception as e:
-            logging.error(f"API Error: {str(e)}")
-            return "I'm experiencing technical difficulties. Please try again later."
 
-    def _log_conversation(self, user_input, response):
+        except Exception as e:
+            logging.error(f"Response error: {str(e)}")
+            return "⚠️ I encountered an error. Please try again later."
+
+    def log_conversation(self, user_input: str, response: str):
         """Log conversation with timestamp"""
         with open(self.conversation_log, "a", encoding="utf-8") as f:
-            log_entry = f"[{datetime.now()}] User: {user_input}\n"
-            log_entry += f"[{datetime.now()}] Assistant: {response}\n\n"
-            f.write(log_entry)
+            f.write(f"[{datetime.now()}] USER: {user_input}\n")
+            f.write(f"[{datetime.now()}] ASSISTANT: {response}\n\n")
 
+# Streamlit UI
 async def main():
-    # Initialize app
     st.set_page_config(
         page_title="ReddyGPT Pro",
         page_icon="🤖",
         layout="wide",
         initial_sidebar_state="expanded"
     )
-    
-    # Initialize chatbot
+
+    # Initialize session
     if 'bot' not in st.session_state:
         st.session_state.bot = ReddyGPT()
-    
+        st.session_state.messages = []
+
     # Sidebar
     with st.sidebar:
-        st.title("ReddyGPT Settings")
-        st.markdown("---")
-        st.markdown("**Current Features:**")
-        st.markdown("- Web Search Integration")
-        st.markdown("- Real-time Streaming")
-        st.markdown("- Conversation Logging")
+        st.title("🔧 Control Panel")
+        st.markdown("**Active Search Engines:**")
+        st.checkbox("Google", value=True, key="use_google")
+        st.checkbox("SERPAPI", value=True, key="use_serpapi")
+        st.checkbox("DuckDuckGo", value=True, key="use_duckduckgo")
         
         if st.button("Clear Conversation"):
-            st.session_state.history = []
+            st.session_state.messages = []
             st.rerun()
-        
-        if os.path.exists("conversations.log"):
-            with open("conversations.log", "r") as f:
-                st.download_button(
-                    "Download Full Log",
-                    f.read(),
-                    "reddygpt_conversations.log"
-                )
 
     # Main interface
-    st.title("🌍 ReddyGPT Pro")
-    st.caption("Advanced AI Assistant with Web Search")
-    
+    st.title("🌐 ReddyGPT Pro")
+    st.caption("Multi-Search AI Assistant")
+
     # Display chat history
-    for message in st.session_state.history:
+    for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-    
+
     # User input
     if prompt := st.chat_input("Ask me anything..."):
-        # Add user message to history
-        st.session_state.history.append({"role": "user", "content": prompt})
+        st.session_state.messages.append({"role": "user", "content": prompt})
         
         with st.chat_message("user"):
             st.markdown(prompt)
-        
+
         with st.chat_message("assistant"):
-            # Step 1: Get search results
-            search_results = await st.session_state.bot._search_web(prompt)
-            context = "\n".join(
-                f"• {res['title']}: {res['content']}\nSource: {res['url']}" 
-                for res in search_results[:3]
-            ) if search_results else ""
-            
-            # Step 2: Generate and stream response
-            response = await st.session_state.bot._generate_response(prompt, context)
-            
-            # Update history and log
-            st.session_state.history.append({"role": "assistant", "content": response})
-            st.session_state.bot._log_conversation(prompt, response)
+            response = await st.session_state.bot.generate_response(prompt)
+            st.session_state.bot.log_conversation(prompt, response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
 
 if __name__ == "__main__":
     asyncio.run(main())
