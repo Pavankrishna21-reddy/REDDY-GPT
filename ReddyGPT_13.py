@@ -1,101 +1,136 @@
 import streamlit as st
-import threading
-from duckduckgo_search import DDGS
-from newspaper import Article
-import requests
-from bs4 import BeautifulSoup
+import openai
 import os
-import uuid
-import datetime
+from datetime import datetime
+from PyPDF2 import PdfReader
+import docx
+import hashlib
 
-# Create chat history file if not exists
-CHAT_HISTORY_FILE = "chat_history.txt"
-if not os.path.exists(CHAT_HISTORY_FILE):
-    with open(CHAT_HISTORY_FILE, "w", encoding="utf-8") as f:
-        f.write("")
+# Configuration
+class Config:
+    CHAT_HISTORY_FILE = "reddy_gpt_global.db"
+    DEFAULT_PROMPT = """You are ReddyGPT - a world-class AI assistant. Provide:
+    1. Expert-level responses
+    2. File analysis when documents are uploaded
+    3. Fast, concise answers
+    4. Proper formatting with markdown"""
+    
+    # Set your OpenAI API key via environment variable
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Function to fetch top 5 search results from DuckDuckGo
-def search_duckduckgo(query):
-    results = []
-    with DDGS() as ddgs:
-        for r in ddgs.text(query, region="in-en", safesearch="moderate", timelimit="d", max_results=5):
-            results.append({
-                "title": r.get("title"),
-                "href": r.get("href"),
-                "body": r.get("body")
-            })
-    return results
+# Core Engine
+class ReddyGPT:
+    def __init__(self):
+        self.config = Config()
+        self._init_db()
+        openai.api_key = self.config.OPENAI_API_KEY
 
-# Function to summarize content from a URL
-def summarize_url(url):
-    try:
-        article = Article(url)
-        article.download()
-        article.parse()
-        article.nlp()
-        return article.summary
-    except:
+    def _init_db(self):
+        if not os.path.exists(self.config.CHAT_HISTORY_FILE):
+            with open(self.config.CHAT_HISTORY_FILE, "w") as f:
+                f.write("")
+
+    def analyze_file(self, file):
+        """Extract text from various file formats"""
         try:
-            response = requests.get(url, timeout=5)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            paragraphs = soup.find_all('p')
-            text = ' '.join([p.text for p in paragraphs[:5]])
-            return text[:1000]
-        except:
-            return "Summary unavailable."
+            if file.type == "application/pdf":
+                reader = PdfReader(file)
+                return "\n".join([page.extract_text() for page in reader.pages])
+            elif file.type == "text/plain":
+                return str(file.read(), "utf-8")
+            elif file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                doc = docx.Document(file)
+                return "\n".join([para.text for para in doc.paragraphs])
+            else:
+                return "Unsupported file format"
+        except Exception as e:
+            return f"File processing error: {str(e)}"
 
-# Function to add to history
-def save_to_history(user_input, response):
-    with open(CHAT_HISTORY_FILE, "a", encoding="utf-8") as f:
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        f.write(f"[{timestamp}] User: {user_input}\n")
-        f.write(f"[{timestamp}] ReddyGPT: {response}\n\n")
-
-# Sidebar for chat history
-with st.sidebar:
-    st.markdown("### ☰ ReddyGPT Chat History")
-    if os.path.exists(CHAT_HISTORY_FILE):
-        with open(CHAT_HISTORY_FILE, "r", encoding="utf-8") as f:
-            history = f.read()
-        st.text_area("Chat Log", history, height=300)
-        if st.button("Clear History"):
-            open(CHAT_HISTORY_FILE, "w").close()
-            st.rerun()
-
-# Page Setup
-st.set_page_config(page_title="ReddyGPT", page_icon="🤖")
-st.markdown("""
-    <style>
-    .stTextInput>div>div>input {
-        font-size: 18px;
-    }
-    .voice-btn {
-        position: absolute;
-        right: 75px;
-        top: 10px;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-st.title("🤖 ReddyGPT: Live Web Search + AI Response")
-
-# User Input
-user_input = st.text_input("Enter your query here:", "")
-
-# Run search and show results
-if user_input:
-    st.markdown(f"### 🔍 Results for: `{user_input}`")
-    results = search_duckduckgo(user_input)
-    if results:
-        for idx, res in enumerate(results):
-            st.markdown(f"**{idx+1}. [{res['title']}]({res['href']})**")
-            summary = summarize_url(res['href'])
-            st.write(summary)
-            st.markdown("---")
-        save_to_history(user_input, results[0]['title'])
-    else:
-        st.warning("No search results found.")
+    def generate_response(self, user_input, file_content=None):
+        messages = [
+            {"role": "system", "content": self.config.DEFAULT_PROMPT},
+            {"role": "user", "content": user_input}
+        ]
         
-        pyinstaller --onefile --noconsole ReddyGPT_13.py
+        if file_content:
+            messages.insert(1, {"role": "system", "content": f"Document content:\n{file_content}"})
+        
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-4-turbo-preview",  # Fastest high-quality model
+                messages=messages,
+                temperature=0.7,
+                stream=True  # For real-time streaming
+            )
+            return self._stream_response(response)
+        except Exception as e:
+            return f"⚠️ Error: {str(e)}"
 
+    def _stream_response(self, response):
+        """Stream the response for better UX"""
+        full_response = ""
+        placeholder = st.empty()
+        for chunk in response:
+            if chunk.choices[0].delta.get("content"):
+                full_response += chunk.choices[0].delta.content
+                placeholder.markdown(full_response + "▌")
+        placeholder.markdown(full_response)
+        return full_response
 
+# Streamlit UI
+def main():
+    st.set_page_config(page_title="ReddyGPT Pro", page_icon="🌍", layout="wide")
+    
+    # Initialize
+    if 'reddy' not in st.session_state:
+        st.session_state.reddy = ReddyGPT()
+        st.session_state.messages = []
+        st.session_state.file_content = None
+
+    # Sidebar
+    with st.sidebar:
+        st.title("ReddyGPT Pro")
+        st.markdown("""
+        **World-class AI assistant**  
+        - File upload support  
+        - GPT-4 Turbo powered  
+        - Real-time streaming  
+        """)
+        
+        # File uploader
+        uploaded_file = st.file_uploader(
+            "📎 Upload PDF/TXT/DOCX",
+            type=["pdf", "txt", "docx"],
+            accept_multiple_files=False
+        )
+        
+        if uploaded_file:
+            with st.spinner("Analyzing file..."):
+                st.session_state.file_content = st.session_state.reddy.analyze_file(uploaded_file)
+                st.success(f"File processed: {uploaded_file.name}")
+
+    # Main chat
+    st.title("🌍 ReddyGPT Pro")
+    st.caption("World-class AI with document analysis")
+
+    # Display messages
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # User input
+    if prompt := st.chat_input("Ask anything..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # Generate response
+        with st.chat_message("assistant"):
+            response = st.session_state.reddy.generate_response(
+                prompt,
+                st.session_state.file_content
+            )
+            st.session_state.messages.append({"role": "assistant", "content": response})
+
+if __name__ == "__main__":
+    main()
